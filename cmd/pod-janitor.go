@@ -1,47 +1,31 @@
 package main
 
 import (
-	"context"
+	"flag"
 	"log"
-	"os"
+	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	cleaner "github.com/filetrust/pod-janitor/pkg"
 )
 
-var podNamespace = os.Getenv("POD_NAMESPACE")
+var podNamespace = flag.String("pod-namespace", "", "The kubernetes namespace to run in")
+var deleteSuccessfulAfter = flag.Duration("delete-successful-after", 0*time.Minute, "Delete pods in succeeded state after X duration (golang duration format, e.g 5m), 0 - never delete")
+var deleteFailedAfter = flag.Duration("delete-failed-after", 0*time.Minute, "Delete pods in failed state after X duration (golang duration format, e.g 5m), 0 - never delete")
 
 func main() {
-	if podNamespace == "" {
-		log.Fatalf("init failed: POD_NAMESPACE environment variable not set")
+	flag.Parse()
+
+	if *podNamespace == "" {
+		log.Fatalf("init failed: pod-namespace argument not set")
 	}
 
-	config, err := rest.InClusterConfig()
+	cleanerArgs, err := cleaner.NewCleanerArgs(*podNamespace, *deleteSuccessfulAfter, *deleteFailedAfter)
 	if err != nil {
-		log.Fatalf("Failed to get cluster config")
+		log.Fatalf("Failed to initialise Cleaner: %v", err)
 	}
 
-	client, err := kubernetes.NewForConfig(config)
+	err = cleanerArgs.RunCleaner()
 	if err != nil {
-		log.Fatalf("Failed to initialise client")
-	}
-
-	pods, err := client.CoreV1().Pods(podNamespace).List(context.TODO(), metav1.ListOptions{FieldSelector: "status.phase=Succeeded"})
-	if err != nil {
-		log.Fatalf("Failed to get list of pods")
-	}
-
-	log.Printf("There are %d pods in the cluster with the status of Succeeded\n", len(pods.Items))
-
-	for _, pod := range pods.Items {
-		err := client.CoreV1().Pods(podNamespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
-		if err != nil {
-			log.Printf("Failed to delete pod: %s %v\n", pod.Name, err)
-			continue
-		}
-		
-		log.Printf("Cleaned up pod %s\n", pod.Name)
+		log.Fatalf("Failed to run Cleaner: %v", err)
 	}
 }

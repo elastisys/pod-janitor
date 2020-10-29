@@ -64,7 +64,7 @@ jobs:
       run: |
         cd infra
         IMAGE_TAG=${{ env.TAG }}-${GITHUB_SHA::7}
-        git checkout -b $IMAGE_TAG
+        git checkout -b $IMAGE_TAG ${{ env.TAG }}
         git config user.email github-actions@github.com
         git config user.name github-actions
         

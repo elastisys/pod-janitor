@@ -6,21 +6,23 @@ import (
 	"log"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
+const listSize = 10
+
 type CleanerArgs struct {
-	PodNamespace            string
-	Client                  *kubernetes.Clientset
-	DeleteSuccessfulAfter   time.Duration
-	DeleteFailedAfter       time.Duration
+	PodNamespace          string
+	Client                *kubernetes.Clientset
+	DeleteSuccessfulAfter time.Duration
+	DeleteFailedAfter     time.Duration
 }
 
-func NewCleanerArgs(podNamespace string, deleteSuccessfulAfter, deleteFailedAfter time.Duration)(*CleanerArgs, error){
+func NewCleanerArgs(podNamespace string, deleteSuccessfulAfter, deleteFailedAfter time.Duration) (*CleanerArgs, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, err
@@ -31,63 +33,82 @@ func NewCleanerArgs(podNamespace string, deleteSuccessfulAfter, deleteFailedAfte
 		return nil, err
 	}
 
-	cleanerArgs := &CleanerArgs {
-		PodNamespace:            podNamespace,
-		Client:                  client,
-		DeleteSuccessfulAfter:   deleteSuccessfulAfter,
-		DeleteFailedAfter:       deleteFailedAfter,
+	cleanerArgs := &CleanerArgs{
+		PodNamespace:          podNamespace,
+		Client:                client,
+		DeleteSuccessfulAfter: deleteSuccessfulAfter,
+		DeleteFailedAfter:     deleteFailedAfter,
 	}
 
 	return cleanerArgs, nil
 }
 
-func (ca CleanerArgs) RunCleaner() error {
-	succeededPods, err := ca.Client.CoreV1().Pods(ca.PodNamespace).List(context.TODO(), metav1.ListOptions{FieldSelector: "status.phase=Succeeded"})
+func (ca CleanerArgs) RunCleaner() {
+	err := ca.processPodList("status.phase=Succeeded")
 	if err != nil {
-		err = fmt.Errorf("Failed to get list of successful pods: %v", err)
-		return err
+		log.Printf("Failed to process succeeded Pods: %v", err)
 	}
-
-	failedPods, err := ca.Client.CoreV1().Pods(ca.PodNamespace).List(context.TODO(), metav1.ListOptions{FieldSelector: "status.phase=Failed"})
+	err = ca.processPodList("status.phase=Failed")
 	if err != nil {
-		err = fmt.Errorf("Failed to get list of failed pods: %v", err)
-		return err
+		log.Printf("Failed to process failed Pods: %v", err)
 	}
+}
 
-	pods := succeededPods.Items[:0]
-	pods = append(pods, succeededPods.Items[:]...)
-	pods = append(pods, failedPods.Items[:]...)
+func (ca CleanerArgs) processPodList(selector string) error {
+	pods, err := ca.Client.CoreV1().Pods(ca.PodNamespace).List(context.TODO(), metav1.ListOptions{
+		FieldSelector: selector,
+		Limit:         10,
+	})
+	if err != nil {
+		return fmt.Errorf("Failed to get list of pods for %v: %v", selector, err)
+	}
+	var cont string
+	cont = pods.Continue
+	ca.clean(&pods.Items)
+	for cont != "" {
+		pods, err := ca.Client.CoreV1().Pods(ca.PodNamespace).List(context.TODO(), metav1.ListOptions{
+			FieldSelector: selector,
+			Limit:         listSize,
+			Continue:      cont,
+		})
+		if err != nil {
+			return fmt.Errorf("Failed to get list of pods for %v: %v", selector, err)
+		}
+		cont = pods.Continue
+		ca.clean(&pods.Items)
+	}
+	return nil
+}
 
-	for _, pod := range pods {
-		
-		if shouldDeletePod(&pod, ca.DeleteSuccessfulAfter, ca.DeleteFailedAfter){
+func (ca CleanerArgs) clean(pods *[]corev1.Pod) {
+	for _, pod := range *pods {
+
+		if shouldDeletePod(&pod, ca.DeleteSuccessfulAfter, ca.DeleteFailedAfter) {
 			err := ca.Client.CoreV1().Pods(ca.PodNamespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 
 			if err != nil {
 				log.Printf("Failed to delete pod: %s %v", pod.Name, err)
 				continue
 			}
-			
+
 			log.Printf("Cleaned up pod %s", pod.Name)
 		}
 	}
-
-	return nil
 }
 
 func shouldDeletePod(pod *corev1.Pod, successful, failed time.Duration) bool {
 	podFinishTime := podFinishTime(pod)
 
-	if !podFinishTime.IsZero(){
+	if !podFinishTime.IsZero() {
 		age := time.Since(podFinishTime)
 
 		switch pod.Status.Phase {
 		case corev1.PodSucceeded:
-			if (successful > 0 && age >= successful){
+			if successful > 0 && age >= successful {
 				return true
 			}
 		case corev1.PodFailed:
-			if (failed > 0 && age >= failed) {
+			if failed > 0 && age >= failed {
 				return true
 			}
 		default:

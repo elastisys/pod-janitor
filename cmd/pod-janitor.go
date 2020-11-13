@@ -24,8 +24,5 @@ func main() {
 		log.Fatalf("Failed to initialise Cleaner: %v", err)
 	}
 
-	err = cleanerArgs.RunCleaner()
-	if err != nil {
-		log.Fatalf("Failed to run Cleaner: %v", err)
-	}
+	cleanerArgs.RunCleaner()
 }

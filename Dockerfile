@@ -7,4 +7,6 @@ RUN cd cmd \
 FROM scratch
 COPY --from=builder /go/src/github.com/filetrust/pod-janitor/cmd/pod-janitor /bin/pod-janitor
 
+USER 1001:1001
+
 ENTRYPOINT ["/bin/pod-janitor"]
